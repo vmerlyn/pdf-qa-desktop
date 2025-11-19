@@ -1,5 +1,6 @@
 //import "./style.css";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 interface OllamaStatus {
   reachable: boolean;
@@ -9,6 +10,12 @@ interface OllamaStatus {
 interface ChatMessage {
   role: "user" | "assistant";
   text: string;
+}
+
+interface OllamaTokenEvent {
+  request_id: string;
+  token: string;
+  done: boolean;
 }
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -47,6 +54,8 @@ const sendBtn = document.getElementById("send-button") as HTMLButtonElement;
 
 let isSending = false;
 const messages: ChatMessage[] = [];
+let activeRequestId: string | null = null;
+let activeAssistantIndex: number | null = null;
 
 function renderMessages() {
   messagesEl.innerHTML = messages
@@ -98,28 +107,35 @@ async function sendMessage() {
   const text = inputEl.value.trim();
   if (!text) return;
 
-  // clear input
+  // Clear input
   inputEl.value = "";
+
+  // Add user message
   messages.push({ role: "user", text });
   renderMessages();
 
+  // Add an empty assistant message where we'll stream tokens
+  const assistantIndex = messages.length;
+  messages.push({ role: "assistant", text: "" });
+  renderMessages();
+
+  const requestId = crypto.randomUUID();
+  activeRequestId = requestId;
+  activeAssistantIndex = assistantIndex;
   isSending = true;
   sendBtn.disabled = true;
-  sendBtn.textContent = "Sending...";
+  sendBtn.textContent = "Streaming...";
 
   try {
-    const answer = (await invoke("chat_with_ollama", {
+    await invoke("chat_with_ollama_stream", {
       prompt: text,
-    })) as string;
-
-    messages.push({ role: "assistant", text: answer });
-    renderMessages();
-  } catch (err) {
-    console.error("Error calling chat_with_ollama:", err);
-    messages.push({
-      role: "assistant",
-      text: "Error talking to local LLM. Check if Ollama is installed and running.",
+      requestId,
     });
+    // The function itself doesn't return streamed text; the tokens come via events.
+  } catch (err) {
+    console.error("Error calling chat_with_ollama_stream:", err);
+    messages[assistantIndex].text =
+      "Error talking to local LLM. Check if Ollama is installed and running.";
     renderMessages();
   } finally {
     isSending = false;
@@ -127,6 +143,30 @@ async function sendMessage() {
     sendBtn.textContent = "Send";
   }
 }
+
+// Listen for streaming tokens from Rust / Ollama
+listen<OllamaTokenEvent>("ollama-token", (event) => {
+  const payload = event.payload;
+
+  // Only apply tokens for the current active request
+  if (!activeRequestId || payload.request_id !== activeRequestId) {
+    return;
+  }
+
+  if (activeAssistantIndex == null || !messages[activeAssistantIndex]) {
+    return;
+  }
+
+  // Append the token to the assistant's message text
+  messages[activeAssistantIndex].text += payload.token;
+  renderMessages();
+
+  if (payload.done) {
+    // Streaming finished for this request
+    activeRequestId = null;
+    activeAssistantIndex = null;
+  }
+});
 
 // Wire up events
 sendBtn.addEventListener("click", () => {
@@ -140,5 +180,5 @@ inputEl.addEventListener("keydown", (ev: KeyboardEvent) => {
   }
 });
 
-// On load, check Ollama
+// On load, check Ollama status
 checkOllama();
