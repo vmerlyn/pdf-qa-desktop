@@ -1,6 +1,6 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
-const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 
 interface OllamaStatus {
   reachable: boolean;
@@ -11,6 +11,12 @@ interface ChatMessage {
   role: "user" | "assistant";
   text: string;
 }
+
+// Tell pdf.js where its worker lives (for pdfjs-dist v3)
+GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.js",
+  import.meta.url
+).toString();
 
 const app = document.querySelector("#app") as HTMLElement;
 
@@ -123,7 +129,6 @@ fileInput.addEventListener("change", async () => {
   if (!file) return;
 
   const name = file.name.toLowerCase();
-  currentDocName = file.name;
 
   try {
     if (name.endsWith(".txt")) {
@@ -136,12 +141,12 @@ fileInput.addEventListener("change", async () => {
     }
   } catch (err) {
     console.error("Error loading document:", err);
-    setDocStatus(`Error loading document ${currentDocName}`, false);
+    setDocStatus("Error loading document", false);
     messages.push({
       role: "assistant",
       text:
         "Error reading that document:\n" +
-      (err instanceof Error ? err.message : String(err)),
+        (err instanceof Error ? err.message : String(err)),
     });
     renderMessages();
   }
@@ -158,11 +163,11 @@ async function loadTextFile(file: File) {
 
   currentDocText = text;
   currentDocName = file.name;
-  setDocStatus(`Loaded: ${currentDocName}`, true);
+  setDocStatus(`Loaded: ${file.name}`, true);
 
   messages.push({
     role: "assistant",
-    text: `Loaded text document "${currentDocName}". You can now ask questions about its contents.`,
+    text: `Loaded text document "${file.name}". You can now ask questions about its contents.`,
   });
   renderMessages();
 }
@@ -173,6 +178,7 @@ async function loadPdfFile(file: File) {
   const arrayBuffer = await file.arrayBuffer();
   const typedArray = new Uint8Array(arrayBuffer);
 
+  // pdfjs-dist v3: getDocument comes from "pdfjs-dist" and uses workerSrc we set above
   const loadingTask = getDocument({ data: typedArray });
   const pdf = await loadingTask.promise;
 
@@ -201,9 +207,7 @@ async function loadPdfFile(file: File) {
     text: `Loaded PDF document "${file.name}". You can now ask questions about its contents.`,
   });
   renderMessages();
-} 
-
-
+}
 
 async function sendMessage() {
   if (isSending) return;
