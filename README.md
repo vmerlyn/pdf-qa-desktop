@@ -59,4 +59,8 @@ npm install
 ```
 Rust dependencies will be handled automatically on first build.
 
-### 3. Run in dev (debug build)
+### 3. Run in dev (debug build)  
+``npm run tauri dev``
+
+### 4. Build a release build  
+``npm run tauri build``
