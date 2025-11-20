@@ -47,7 +47,7 @@ pub async fn chat_with_ollama(prompt: String, doc: Option<String>) -> Result<Str
     let url = "http://127.0.0.1:11434/api/generate";
 
     // Use the model name you confirmed works, e.g. "tinyllama:latest"
-    let model = "tinyllama:latest";
+    let model = "phi3:latest";
 
     // Build final prompt with document context if available
     let final_prompt = if let Some(d) = doc {
