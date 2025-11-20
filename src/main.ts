@@ -1,6 +1,5 @@
-//import "./style.css";
+import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 
 interface OllamaStatus {
   reachable: boolean;
@@ -10,12 +9,6 @@ interface OllamaStatus {
 interface ChatMessage {
   role: "user" | "assistant";
   text: string;
-}
-
-interface OllamaTokenEvent {
-  request_id: string;
-  token: string;
-  done: boolean;
 }
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -28,8 +21,16 @@ app.innerHTML = `
   <div class="app-root">
     <header class="app-header">
       <h1>Local PDF LLM</h1>
-      <span id="ollama-status" class="status-badge">Checking Ollama...</span>
+      <div class="header-right">
+        <span id="ollama-status" class="status-badge">Checking Ollama...</span>
+      </div>
     </header>
+
+    <section class="toolbar">
+      <button id="load-file-button" class="toolbar-button">Load Text File</button>
+      <input type="file" id="file-input" accept=".txt" style="display: none" />
+      <span id="doc-status" class="status-badge doc-badge">No document loaded</span>
+    </section>
 
     <section id="chat" class="chat-container">
       <div id="chat-messages" class="chat-messages"></div>
@@ -40,7 +41,7 @@ app.innerHTML = `
         id="chat-input"
         class="chat-input"
         rows="2"
-        placeholder="Type a message to the local LLM..."
+        placeholder="Type a question about the loaded document..."
       ></textarea>
       <button id="send-button" class="send-button">Send</button>
     </section>
@@ -48,14 +49,18 @@ app.innerHTML = `
 `;
 
 const statusEl = document.getElementById("ollama-status") as HTMLSpanElement;
+const docStatusEl = document.getElementById("doc-status") as HTMLSpanElement;
 const messagesEl = document.getElementById("chat-messages") as HTMLDivElement;
 const inputEl = document.getElementById("chat-input") as HTMLTextAreaElement;
 const sendBtn = document.getElementById("send-button") as HTMLButtonElement;
+const loadFileBtn = document.getElementById("load-file-button") as HTMLButtonElement;
+const fileInput = document.getElementById("file-input") as HTMLInputElement;
 
 let isSending = false;
 const messages: ChatMessage[] = [];
-let activeRequestId: string | null = null;
-let activeAssistantIndex: number | null = null;
+
+let currentDocText: string | null = null;
+let currentDocName: string | null = null;
 
 function renderMessages() {
   messagesEl.innerHTML = messages
@@ -101,41 +106,87 @@ async function checkOllama() {
   }
 }
 
+function setDocStatus(text: string, ok: boolean) {
+  docStatusEl.textContent = text;
+  docStatusEl.classList.toggle("status-ok", ok);
+  docStatusEl.classList.toggle("status-error", !ok);
+}
+
+function loadTextFile() {
+  fileInput.value = ""; // reset
+  fileInput.click();
+}
+
+fileInput.addEventListener("change", () => {
+  const file = fileInput.files?.[0];
+  if (!file) return;
+
+  if (!file.name.toLowerCase().endsWith(".txt")) {
+    setDocStatus("Please select a .txt file", false);
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    currentDocText = reader.result as string;
+    currentDocName = file.name;
+    setDocStatus(`Loaded: ${file.name}`, true);
+
+    // Optional: system message in chat
+    messages.push({
+      role: "assistant",
+      text: `Loaded document "${file.name}". You can now ask questions about its contents.`,
+    });
+    renderMessages();
+  };
+  reader.onerror = () => {
+    console.error("Error reading file", reader.error);
+    setDocStatus("Error reading file", false);
+  };
+
+  reader.readAsText(file);
+});
+
 async function sendMessage() {
   if (isSending) return;
 
   const text = inputEl.value.trim();
   if (!text) return;
 
-  // Clear input
+  if (!currentDocText) {
+    messages.push({
+      role: "assistant",
+      text: "Please load a text file first using the 'Load Text File' button.",
+    });
+    renderMessages();
+    return;
+  }
+
   inputEl.value = "";
 
   // Add user message
   messages.push({ role: "user", text });
   renderMessages();
 
-  // Add an empty assistant message where we'll stream tokens
-  const assistantIndex = messages.length;
-  messages.push({ role: "assistant", text: "" });
-  renderMessages();
-
-  const requestId = crypto.randomUUID();
-  activeRequestId = requestId;
-  activeAssistantIndex = assistantIndex;
   isSending = true;
   sendBtn.disabled = true;
-  sendBtn.textContent = "Streaming...";
+  sendBtn.textContent = "Thinking...";
 
   try {
-    await invoke("chat_with_ollama_stream", {
+    const answer = (await invoke("chat_with_ollama", {
       prompt: text,
-      requestId,
-    });
-    // The function itself doesn't return streamed text; the tokens come via events.
+      doc: currentDocText,
+    })) as string;
+
+    messages.push({ role: "assistant", text: answer });
+    renderMessages();
   } catch (err) {
-    console.error("Error calling chat_with_ollama_stream:", err);
-    messages[assistantIndex].text =
-      "Error talking to local LLM. Check if Ollama is installed and running.";
+    console.error("Error calling chat_with_ollama:", err);
+    messages.push({
+      role: "assistant",
+      text:
+        "Error talking to local LLM. Check if Ollama is installed and running, and that the tinyllama model is available.",
+    });
     renderMessages();
   } finally {
     isSending = false;
@@ -143,30 +194,6 @@ async function sendMessage() {
     sendBtn.textContent = "Send";
   }
 }
-
-// Listen for streaming tokens from Rust / Ollama
-listen<OllamaTokenEvent>("ollama-token", (event) => {
-  const payload = event.payload;
-
-  // Only apply tokens for the current active request
-  if (!activeRequestId || payload.request_id !== activeRequestId) {
-    return;
-  }
-
-  if (activeAssistantIndex == null || !messages[activeAssistantIndex]) {
-    return;
-  }
-
-  // Append the token to the assistant's message text
-  messages[activeAssistantIndex].text += payload.token;
-  renderMessages();
-
-  if (payload.done) {
-    // Streaming finished for this request
-    activeRequestId = null;
-    activeAssistantIndex = null;
-  }
-});
 
 // Wire up events
 sendBtn.addEventListener("click", () => {
@@ -180,5 +207,9 @@ inputEl.addEventListener("keydown", (ev: KeyboardEvent) => {
   }
 });
 
-// On load, check Ollama status
+loadFileBtn.addEventListener("click", () => {
+  loadTextFile();
+});
+
+// On load, check Ollama
 checkOllama();
