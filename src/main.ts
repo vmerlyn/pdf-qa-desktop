@@ -1,5 +1,6 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
+const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
 
 interface OllamaStatus {
   reachable: boolean;
@@ -27,8 +28,8 @@ app.innerHTML = `
     </header>
 
     <section class="toolbar">
-      <button id="load-file-button" class="toolbar-button">Load Text File</button>
-      <input type="file" id="file-input" accept=".txt" style="display: none" />
+      <button id="load-doc-button" class="toolbar-button">Load Document (.txt or .pdf)</button>
+      <input type="file" id="file-input" accept=".txt,.pdf" style="display: none" />
       <span id="doc-status" class="status-badge doc-badge">No document loaded</span>
     </section>
 
@@ -53,7 +54,7 @@ const docStatusEl = document.getElementById("doc-status") as HTMLSpanElement;
 const messagesEl = document.getElementById("chat-messages") as HTMLDivElement;
 const inputEl = document.getElementById("chat-input") as HTMLTextAreaElement;
 const sendBtn = document.getElementById("send-button") as HTMLButtonElement;
-const loadFileBtn = document.getElementById("load-file-button") as HTMLButtonElement;
+const loadDocBtn = document.getElementById("load-doc-button") as HTMLButtonElement;
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
 
 let isSending = false;
@@ -112,40 +113,97 @@ function setDocStatus(text: string, ok: boolean) {
   docStatusEl.classList.toggle("status-error", !ok);
 }
 
-function loadTextFile() {
-  fileInput.value = ""; // reset
+function triggerFilePicker() {
+  fileInput.value = "";
   fileInput.click();
 }
 
-fileInput.addEventListener("change", () => {
+fileInput.addEventListener("change", async () => {
   const file = fileInput.files?.[0];
   if (!file) return;
 
-  if (!file.name.toLowerCase().endsWith(".txt")) {
-    setDocStatus("Please select a .txt file", false);
+  const name = file.name.toLowerCase();
+  currentDocName = file.name;
+
+  try {
+    if (name.endsWith(".txt")) {
+      await loadTextFile(file);
+    } else if (name.endsWith(".pdf")) {
+      await loadPdfFile(file);
+    } else {
+      setDocStatus("Unsupported file type. Use .txt or .pdf", false);
+      return;
+    }
+  } catch (err) {
+    console.error("Error loading document:", err);
+    setDocStatus(`Error loading document ${currentDocName}`, false);
+    messages.push({
+      role: "assistant",
+      text:
+        "Error reading that document:\n" +
+      (err instanceof Error ? err.message : String(err)),
+    });
+    renderMessages();
+  }
+});
+
+async function loadTextFile(file: File) {
+  setDocStatus(`Loading text file...`, true);
+  const text = await file.text();
+
+  if (!text.trim()) {
+    setDocStatus("Text file appears empty", false);
     return;
   }
 
-  const reader = new FileReader();
-  reader.onload = () => {
-    currentDocText = reader.result as string;
-    currentDocName = file.name;
-    setDocStatus(`Loaded: ${currentDocName}`, true);
+  currentDocText = text;
+  currentDocName = file.name;
+  setDocStatus(`Loaded: ${currentDocName}`, true);
 
-    // Optional: system message in chat
-    messages.push({
-      role: "assistant",
-      text: `Loaded document "${currentDocName}". You can now ask questions about its contents.`,
-    });
-    renderMessages();
-  };
-  reader.onerror = () => {
-    console.error("Error reading file", reader.error);
-    setDocStatus("Error reading file", false);
-  };
+  messages.push({
+    role: "assistant",
+    text: `Loaded text document "${currentDocName}". You can now ask questions about its contents.`,
+  });
+  renderMessages();
+}
 
-  reader.readAsText(file);
-});
+async function loadPdfFile(file: File) {
+  setDocStatus(`Loading PDF...`, true);
+
+  const arrayBuffer = await file.arrayBuffer();
+  const typedArray = new Uint8Array(arrayBuffer);
+
+  const loadingTask = getDocument({ data: typedArray });
+  const pdf = await loadingTask.promise;
+
+  let fullText = "";
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const strings = (content.items as any[]).map(
+      (item) => (item as any).str as string
+    );
+    fullText += strings.join(" ") + "\n\n";
+  }
+
+  if (!fullText.trim()) {
+    setDocStatus("PDF loaded but appears to have no extractable text", false);
+    return;
+  }
+
+  currentDocText = fullText;
+  currentDocName = file.name;
+  setDocStatus(`Loaded PDF: ${file.name}`, true);
+
+  messages.push({
+    role: "assistant",
+    text: `Loaded PDF document "${file.name}". You can now ask questions about its contents.`,
+  });
+  renderMessages();
+} 
+
+
 
 async function sendMessage() {
   if (isSending) return;
@@ -156,7 +214,7 @@ async function sendMessage() {
   if (!currentDocText) {
     messages.push({
       role: "assistant",
-      text: "Please load a text file first using the 'Load Text File' button.",
+      text: "Please load a .txt or .pdf document first.",
     });
     renderMessages();
     return;
@@ -207,8 +265,8 @@ inputEl.addEventListener("keydown", (ev: KeyboardEvent) => {
   }
 });
 
-loadFileBtn.addEventListener("click", () => {
-  loadTextFile();
+loadDocBtn.addEventListener("click", () => {
+  triggerFilePicker();
 });
 
 // On load, check Ollama
