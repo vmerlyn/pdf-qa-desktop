@@ -130,12 +130,12 @@ fileInput.addEventListener("change", () => {
   reader.onload = () => {
     currentDocText = reader.result as string;
     currentDocName = file.name;
-    setDocStatus(`Loaded: ${file.name}`, true);
+    setDocStatus(`Loaded: ${currentDocName}`, true);
 
     // Optional: system message in chat
     messages.push({
       role: "assistant",
-      text: `Loaded document "${file.name}". You can now ask questions about its contents.`,
+      text: `Loaded document "${currentDocName}". You can now ask questions about its contents.`,
     });
     renderMessages();
   };
